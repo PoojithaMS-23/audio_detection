@@ -139,8 +139,95 @@
 #         return "HUMAN", round(human_prob, 4)
 
 
+# import torch
+# import numpy as np
+
+# from app.models.wav2vec2_xlsr import Wav2VecXLSR
+# from app.models.aasist3 import AASIST
+
+# # -------------------- Globals --------------------
+# wav2vec = None
+# aasist = None
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# # -------------------- Utils --------------------
+# def apply_pre_emphasis(y, coef=0.97):
+#     """
+#     Optional: enhances high-frequency artifacts.
+#     Safe for short audio.
+#     """
+#     if y is None or len(y) < 2:
+#         return y
+#     return np.append(y[0], y[1:] - coef * y[:-1])
+
+
+# # -------------------- Model Loader --------------------
+# def load_models():
+#     global wav2vec, aasist
+
+#     if wav2vec is None:
+#         wav2vec = Wav2VecXLSR()
+#         # Move internal model to device if supported
+#         if hasattr(wav2vec, "to"):
+#             wav2vec.to(device)
+
+#     if aasist is None:
+#         aasist = AASIST()
+#         aasist.to(device)
+#         aasist.eval()
+
+
+# # -------------------- Main Inference --------------------
+# def detect_ai_voice(waveform, sample_rate: int = 16000):
+#     """
+#     Args:
+#         waveform: np.ndarray or torch.Tensor (mono)
+#         sample_rate: expected 16000
+#     Returns:
+#         (label, confidence)
+#     """
+#     load_models()
+
+#     # ---- 1. Input normalization ----
+#     if isinstance(waveform, torch.Tensor):
+#         waveform = waveform.detach().cpu().numpy()
+
+#     waveform = waveform.flatten().astype(np.float32)
+
+#     # Optional (can disable if needed)
+#     waveform = apply_pre_emphasis(waveform)
+
+#     # ---- 2. XLS-R feature extraction ----
+#     # extract_features MUST return torch.Tensor [B, T, C] or [B, C, T]
+#     features = wav2vec.extract_features(waveform, sample_rate)
+
+#     if not isinstance(features, torch.Tensor):
+#         raise RuntimeError("Wav2VecXLSR.extract_features must return a torch.Tensor")
+
+#     features = features.to(device)
+
+#     # ---- 3. AASIST inference ----
+#     with torch.no_grad():
+#         logits = aasist(features)
+
+#     probs = torch.softmax(logits, dim=-1)
+
+#     # Assumption: index 0 = human, 1 = AI
+#     human_prob = probs[0][0].item()
+#     ai_prob = probs[0][1].item()
+
+#     if ai_prob > human_prob:
+#         return "AI_GENERATED", round(ai_prob, 4)
+#     else:
+#         return "HUMAN", round(human_prob, 4)
+
+
+
 import torch
 import numpy as np
+import os
+from huggingface_hub import login
 
 from app.models.wav2vec2_xlsr import Wav2VecXLSR
 from app.models.aasist3 import AASIST
@@ -148,58 +235,58 @@ from app.models.aasist3 import AASIST
 # -------------------- Globals --------------------
 wav2vec = None
 aasist = None
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+# Force CPU on Render Free Tier to avoid CUDA initialization memory overhead
+device = torch.device("cpu") 
 
 # -------------------- Utils --------------------
 def apply_pre_emphasis(y, coef=0.97):
-    """
-    Optional: enhances high-frequency artifacts.
-    Safe for short audio.
-    """
     if y is None or len(y) < 2:
         return y
     return np.append(y[0], y[1:] - coef * y[:-1])
-
 
 # -------------------- Model Loader --------------------
 def load_models():
     global wav2vec, aasist
 
+    # 1. Login to HF using the token from Render Environment Variables
+    hf_token = os.getenv("HF_TOKEN")
+    if hf_token:
+        try:
+            login(token=hf_token)
+            print("Successfully authenticated with Hugging Face.")
+        except Exception as e:
+            print(f"HF Login failed: {e}")
+
+    # 2. Load XLS-R
     if wav2vec is None:
+        print("Initializing Wav2VecXLSR... (This may take a moment)")
         wav2vec = Wav2VecXLSR()
-        # Move internal model to device if supported
         if hasattr(wav2vec, "to"):
             wav2vec.to(device)
 
+    # 3. Load AASIST
     if aasist is None:
+        print("Initializing AASIST3...")
         aasist = AASIST()
         aasist.to(device)
         aasist.eval()
-
+    
+    print("All models loaded successfully.")
 
 # -------------------- Main Inference --------------------
 def detect_ai_voice(waveform, sample_rate: int = 16000):
-    """
-    Args:
-        waveform: np.ndarray or torch.Tensor (mono)
-        sample_rate: expected 16000
-    Returns:
-        (label, confidence)
-    """
-    load_models()
+    # CRITICAL: If models aren't loaded, load them now
+    if wav2vec is None or aasist is None:
+        load_models()
 
     # ---- 1. Input normalization ----
     if isinstance(waveform, torch.Tensor):
         waveform = waveform.detach().cpu().numpy()
 
     waveform = waveform.flatten().astype(np.float32)
-
-    # Optional (can disable if needed)
     waveform = apply_pre_emphasis(waveform)
 
     # ---- 2. XLS-R feature extraction ----
-    # extract_features MUST return torch.Tensor [B, T, C] or [B, C, T]
     features = wav2vec.extract_features(waveform, sample_rate)
 
     if not isinstance(features, torch.Tensor):
@@ -214,8 +301,13 @@ def detect_ai_voice(waveform, sample_rate: int = 16000):
     probs = torch.softmax(logits, dim=-1)
 
     # Assumption: index 0 = human, 1 = AI
-    human_prob = probs[0][0].item()
-    ai_prob = probs[0][1].item()
+    # Adding a safety check for tensor shape
+    if probs.ndim == 1:
+        human_prob = probs[0].item()
+        ai_prob = probs[1].item()
+    else:
+        human_prob = probs[0][0].item()
+        ai_prob = probs[0][1].item()
 
     if ai_prob > human_prob:
         return "AI_GENERATED", round(ai_prob, 4)
