@@ -76,41 +76,90 @@
 
 
 
+# import torch
+# import numpy as np
+# from transformers import AutoFeatureExtractor, Wav2Vec2Model
+
+# MODEL_NAME = "facebook/wav2vec2-xls-r-300m"
+
+
+# class Wav2VecXLSR:
+#     def __init__(self):
+#         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+#         # Feature extractor (NO tokenizer)
+#         self.feature_extractor = AutoFeatureExtractor.from_pretrained(MODEL_NAME)
+
+#         # XLS-R backbone
+#         self.model = Wav2Vec2Model.from_pretrained(MODEL_NAME)
+#         self.model.to(self.device)
+#         self.model.eval()
+
+#     def extract_features(self, waveform, sample_rate: int = 16000):
+#         """
+#         Input:
+#             waveform: np.ndarray or torch.Tensor (1D)
+#         Output:
+#             torch.Tensor -> (B, T, 1024)
+#         """
+
+#         # ---- Normalize input ----
+#         if isinstance(waveform, torch.Tensor):
+#             waveform = waveform.detach().cpu().numpy()
+
+#         waveform = np.asarray(waveform, dtype=np.float32).squeeze()
+
+#         if waveform.ndim != 1:
+#             waveform = waveform.flatten()
+
+#         # ---- Feature extraction ----
+#         inputs = self.feature_extractor(
+#             waveform,
+#             sampling_rate=sample_rate,
+#             return_tensors="pt",
+#             padding=False
+#         )
+
+#         inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+#         # ---- Forward ----
+#         with torch.no_grad():
+#             outputs = self.model(**inputs)
+
+#         # (B, T, 1024)
+#         return outputs.last_hidden_state
+
+
+
+
 import torch
 import numpy as np
 from transformers import AutoFeatureExtractor, Wav2Vec2Model
 
-MODEL_NAME = "facebook/wav2vec2-xls-r-300m"
-
+MODEL_NAME = "facebook/wav2vec2-base-960h"  # smaller, CPU-friendly
 
 class Wav2VecXLSR:
     def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Feature extractor (NO tokenizer)
+        # Feature extractor
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(MODEL_NAME)
 
         # XLS-R backbone
         self.model = Wav2Vec2Model.from_pretrained(MODEL_NAME)
-        self.model.to(self.device)
-        self.model.eval()
+        self.model.eval()  # no device transfer, CPU only
 
     def extract_features(self, waveform, sample_rate: int = 16000):
         """
         Input:
             waveform: np.ndarray or torch.Tensor (1D)
         Output:
-            torch.Tensor -> (B, T, 1024)
+            torch.Tensor -> (B, T, 768)
         """
 
         # ---- Normalize input ----
         if isinstance(waveform, torch.Tensor):
             waveform = waveform.detach().cpu().numpy()
 
-        waveform = np.asarray(waveform, dtype=np.float32).squeeze()
-
-        if waveform.ndim != 1:
-            waveform = waveform.flatten()
+        waveform = np.asarray(waveform, dtype=np.float32).flatten()
 
         # ---- Feature extraction ----
         inputs = self.feature_extractor(
@@ -120,11 +169,9 @@ class Wav2VecXLSR:
             padding=False
         )
 
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
         # ---- Forward ----
-        with torch.no_grad():
+        with torch.inference_mode():  # faster + less RAM than no_grad
             outputs = self.model(**inputs)
 
-        # (B, T, 1024)
+        # (B, T, 768) for base model
         return outputs.last_hidden_state
